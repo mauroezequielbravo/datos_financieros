@@ -1,0 +1,127 @@
+#version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    #platform: linux/amd64
+    container_name: postgres-merval
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: DB_Merval
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow:
+    # image: apache/airflow:2.8.1
+    build: 
+      context: .
+      args:
+        - ENVIRONMENT=${BUILD_ENV:-production}
+    image: my-airflow:${TAG:-latest}
+    #platform: linux/amd64
+    container_name: airflow-merval
+    # Opción 1: Sintaxis clásica (funciona siempre)
+    mem_limit: 4G
+    cpus: 2
+    # Opción 2: Sintaxis moderna (requiere Docker Swarm)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 4G
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/DB_Merval
+      AIRFLOW__CORE__FERNET_KEY: "EXAMPLE_FERNET_KEY_SHOULD_BE_SET"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "your-secret-key-here"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
+    volumes:
+      - ./apache_airflow/dags:/opt/airflow/dags
+      - ./dbt:/opt/airflow/dbt
+      - ./entrypoint.sh:/entrypoint.sh
+      - airflow_data:/opt/airflow
+    ports:
+      - "8080:8080"
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+
+  dbt:
+    image: ghcr.io/dbt-labs/dbt-postgres:1.9.latest
+    #platform: linux/amd64
+    container_name: dbt-merval
+    depends_on:
+      - postgres
+    volumes:
+      - ./dbt:/usr/app
+    working_dir: /usr/app
+    environment:
+      DBT_PROFILES_DIR: /usr/app
+    entrypoint: [ "tail", "-f", "/dev/null" ] # Mantiene el contenedor corriendo para desarrollo
+
+  metabase:
+    image: metabase/metabase:v0.55.7
+    #platform: linux/amd64
+    container_name: metabase-merval
+    ports:
+      - "3000:3000"
+    environment:
+      MB_JETTY_MAX_THREADS: 100
+      MB_JETTY_MIN_THREADS: 10
+      MB_ENCRYPTION_SECRET_KEY: "your-encryption-secret-key-here"
+      MB_DB_FILE: /metabase-data/metabase.db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - ./metabase:/metabase-data
+
+  n8n:
+    image: n8nio/n8n:1.45.1
+    container_name: n8n-merval
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=admin123
+      - N8N_HOST=n8n
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=DB_Merval
+      - DB_POSTGRESDB_USER=airflow
+      - DB_POSTGRESDB_PASSWORD=airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./n8n:/home/node/.n8n
+
+volumes:
+  airflow_data:
+  metabase:
+  postgres_data:
+  n8n:
+
+
+
